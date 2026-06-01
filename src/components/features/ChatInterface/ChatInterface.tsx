@@ -172,19 +172,59 @@ const formatContext = (dashboard: DashboardContext, user: UserContext, dataSourc
       `If you must save one panel at a time, call update_dashboard for panel 1 before writing text about panel 2 — never stop after search/planning text.`
   );
 
-  // PromQL anomaly detection (grafana/promql-anomaly-detection)
+  // Hybrid anomaly: PowerTech ML exporter + promql-anomaly-detection (best of both)
   lines.push('');
-  lines.push('PromQL anomaly detection panels:');
-  lines.push('- Metrics must be tagged with anomaly_name (required) and optionally anomaly_strategy (adaptive or robust).');
-  lines.push('- Recording rules in Prometheus produce anomaly:lower_band, anomaly:upper_band, and anomaly:level series.');
-  lines.push('- An anomaly panel is a time series with multiple targets on the same chart:');
-  lines.push('  1) Raw metric: {job="$job", anomaly_name="$anomaly_name", anomaly_strategy="$anomaly_strategy", anomaly_select=""}');
-  lines.push('  2) Lower band: last_over_time(anomaly:lower_band{job="$job", anomaly_name="$anomaly_name", anomaly_strategy="$anomaly_strategy"}[2m])');
-  lines.push('  3) Upper band: last_over_time(anomaly:upper_band{job="$job", anomaly_name="$anomaly_name", anomaly_strategy="$anomaly_strategy"}[2m])');
-  lines.push('- Use field overrides so upper/lower bands are semi-transparent fills; name them anomaly_upper_band and anomaly_lower_band.');
-  lines.push('- Use robust strategy for spiky/non-normal signals; adaptive for normally distributed metrics.');
-  lines.push('- Bands need ~24h of data before they are reliable. Mention this if bands look too wide or narrow.');
-  lines.push('- To add an anomaly panel: get_dashboard_by_uid, append one timeseries panel with the queries above, update_dashboard. Do not stop after describing the steps.');
+  lines.push('Hybrid anomaly detection (use the right track — never both on the same metric):');
+  lines.push(
+    '- **Track 1 — PowerTech ML** (module/pressure/process): RandomForest exporter metrics. ' +
+      'Do NOT add anomaly_name to these series.'
+  );
+  lines.push(
+    '- **Track 2 — Framework** (infra/host/OTel/generic): Tag with anomaly_name + anomaly_strategy; ' +
+      'bands are anomaly:upper_band, anomaly:lower_band, anomaly:level from recording rules (~24h warmup).'
+  );
+  lines.push(
+    '- When the user says "module", "pressure", "machine_metrics", or "ML bound": use Track 1 only.'
+  );
+  lines.push(
+    '- When the user says "node CPU", "infra", or "service latency" without ML labels: use Track 2 only.'
+  );
+  lines.push(
+    '- Alerts: Track 1 → PowerTechMLAboveUpperBound / BelowLowerBound (machine vs last_over_time bounds). ' +
+      'Track 2 → AnomalyDetected on anomaly:level vs anomaly bands.'
+  );
+
+  // PowerTech ML exporter (Prometheus) — Track 1 panels on operator dashboards
+  lines.push('');
+  lines.push('Track 1 — PowerTech ML anomaly panels (machine_metrics + ML bounds):');
+  lines.push(
+    '- Each panel uses Prometheus metrics with labels `machine` and `field` (from the ML exporter on :8000).'
+  );
+  lines.push('  - Actual (fast, ~15s): `machine_metrics{machine="...", field="..."}` — no lookback needed.');
+  lines.push(
+    '  - Expected / upper / lower (ML cycle, ~5m): `machine_metric_expected`, `machine_metric_upper_bound`, `machine_metric_lower_bound` with the SAME `machine` and `field`.'
+  );
+  lines.push(
+    '  - ML-bound targets MUST use a lookback so stale scrapes do not break the chart, e.g. `last_over_time(machine_metric_upper_bound{machine="X", field="Y"}[6m])` (use [6m] or slightly more than the ML refresh interval).'
+  );
+  lines.push(
+    '  - Do NOT add lookback on `machine_metrics` unless the user asks — it updates every live cycle.'
+  );
+  lines.push(
+    '- Panel layout: refId A = actual; additional targets = lower band, upper band, expected (ML). Use field overrides for semi-transparent band fills.'
+  );
+  lines.push(
+    '- When editing many panels: prefer one `get_dashboard_by_uid` + one `update_dashboard` with all panel query changes. Confirm save returned uid+version before telling the user to refresh.'
+  );
+  lines.push(
+    '- If bands are flat/missing: check ML exporter health, label values (machine/field), and that lookback on bound metrics is at least ~6m.'
+  );
+  // Optional: Grafana promql-anomaly-detection framework (different label model)
+  lines.push('');
+  lines.push('Grafana promql-anomaly-detection framework (only if metrics use anomaly_name labels, not PowerTech ML names above):');
+  lines.push('- Tagged metrics: anomaly_name, optional anomaly_strategy (adaptive|robust). Bands: anomaly:upper_band, anomaly:lower_band, anomaly:level.');
+  lines.push('- Example lower band: last_over_time(anomaly:lower_band{anomaly_name="...", anomaly_strategy="..."}[2m]).');
+  lines.push('- That framework needs ~24h of history before bands stabilize.');
 
   return lines.join('\n');
 };
