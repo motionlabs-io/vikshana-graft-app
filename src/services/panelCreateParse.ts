@@ -1,0 +1,296 @@
+import { extractAllDashboardUids, extractClaimedVendorDashboardUid } from './dashboardMentionParse';
+import { findMachineIdsInText, isMachineId, MACHINE_ID_PATTERN } from './dashboardCloneParse';
+import { userWantsDashboardMetricPanels } from './dashboardMetricPanelsParse';
+import { messageMentionsOwnHistoryPanel } from './ownHistoryPanelParse';
+import { messageMentionsAddPeerRfPanel } from './peerRfPanelAddParse';
+import { messageMentionsPredictiveAnalyticsPanel } from './historyComparisonPanelAddParse';
+import { messageMentionsPeerBandPanelCreate } from './peerBandPanelAddParse';
+import {
+    messageMentionsGrafanaAlertCreate,
+    messageMentionsGrafanaAlertUpdate,
+} from './grafanaAlertParse';
+
+export type PanelCreateType = 'barchart' | 'gauge' | 'stat' | 'timeseries' | 'table';
+
+export interface PanelCreateRequest {
+    panelTitle: string;
+    panelType: PanelCreateType;
+    dashboardUid?: string;
+    titleLabel?: string;
+    machineId?: string;
+}
+
+export interface MultiPanelCreateSpec {
+    panelType: PanelCreateType;
+    panelTitle: string;
+}
+
+export interface MultiPanelCreateRequest {
+    dashboardUid?: string;
+    titleLabel?: string;
+    machineId?: string;
+    panels: MultiPanelCreateSpec[];
+}
+
+const MULTI_PANEL_TYPE_PATTERNS: {
+    type: PanelCreateType;
+    re: RegExp;
+    defaultTitle: string;
+}[] = [
+    { type: 'gauge', re: /\bgauge\s+panel\b/gi, defaultTitle: 'Gauge Panel' },
+    { type: 'timeseries', re: /\btime\s*series\s+panel\b/gi, defaultTitle: 'Time Series Panel' },
+    { type: 'table', re: /\btable\s+panel\b/gi, defaultTitle: 'Table Panel' },
+    { type: 'stat', re: /\bstat\s+panel\b/gi, defaultTitle: 'Stat Panel' },
+];
+
+function normalizeMessageQuotes(text: string): string {
+    return text.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'");
+}
+
+function extractPanelTitle(text: string): string | undefined {
+    const patterns = [
+        /\b(?:create|add|make|put|build)\s+(?:a\s+)?(?:new\s+)?(?:(?:[\w-]+\s+)+)?panel\s+(?:called|named|titled)\s+"([^"]+)"/i,
+        /\b(?:create|add|make)\s+(?:a\s+)?(?:new\s+)?(?:(?:[\w-]+\s+)+)?panel\s+(?:called|named|titled)\s+'([^']+)'/i,
+        /\b(?:create|add|make|put|build)\s+(?:a\s+)?(?:new\s+)?(?:bar\s*chart|gauge|stat|time\s*series|timeseries|table|chart)\s+panel\s+(?:called|named|titled)\s+"([^"]+)"/i,
+        /\b(?:create|add|make|put|build)\s+(?:a\s+)?(?:new\s+)?(?:bar\s*chart|gauge|stat|time\s*series|timeseries|table|chart)\s+panel\s+(?:called|named|titled)\s+([A-Za-z][\w -]{1,60}?)(?:\s+on\b|\s*$)/i,
+        /\b(?:need|want)\s+(?:a\s+)?([A-Za-z][\w -]{1,40}?)\s+gauge\b/i,
+        /\b(?:create|add|make|put|build)\s+(?:a\s+)?(?:new\s+)?([A-Za-z][\w -]{1,40}?)\s+gauge\b/i,
+        /\bbar\s*chart\s+(?:of|that shows)\s+(.+?)(?=\s+for\b|\s+on\b|$)/i,
+        /\b(?:create|add|make|put|build|need|want)\s+(?:a\s+)?(?:new\s+)?gauge(?:\s+panel)?\s+(?:called|named|titled)\s+"?([^"\n]+?)"?(?=\s+on\b|\s+for\b|\s*$)/i,
+        /\b(?:create|add|make|put|build)\s+(?:a\s+)?(?:new\s+)?(?:bar\s*chart|gauge|stat|time\s*series|timeseries|table|chart)\s+(?:called|named|titled)\s+"([^"]+)"/i,
+        /\b(?:create|add|make)\s+(?:a\s+)?(?:new\s+)?panel\s+(?:called|named|titled)\s+"([^"]+)"/i,
+        /\b(?:create|add|make)\s+(?:a\s+)?(?:new\s+)?(?:bar\s*chart|gauge|stat|time\s*series|timeseries|table|chart)\s+panel\s+(?:called|named|titled)\s+'([^']+)'/i,
+        /\b(?:create|add|make)\s+(?:a\s+)?(?:new\s+)?panel\s+(?:called|named|titled)\s+'([^']+)'/i,
+    ];
+    for (const re of patterns) {
+        const match = text.match(re);
+        if (match?.[1]?.trim()) {
+            return match[1].trim();
+        }
+    }
+    return undefined;
+}
+
+function inferPanelType(text: string): PanelCreateType {
+    if (/\btable\b/i.test(text)) {
+        return 'table';
+    }
+    if (/\bbar\s*chart\b/i.test(text) || (/\bchart\b/i.test(text) && !/\btime\s*series\b/i.test(text))) {
+        return 'barchart';
+    }
+    if (/\bgauge\b/i.test(text)) {
+        return 'gauge';
+    }
+    if (/\btime\s*series\b|\btimeseries\b/i.test(text)) {
+        return 'timeseries';
+    }
+    if (/\bstat\b/i.test(text)) {
+        return 'stat';
+    }
+    return 'barchart';
+}
+
+function extractTitleLabel(text: string): string | undefined {
+    if (extractClaimedVendorDashboardUid(text)) {
+        return undefined;
+    }
+    if (/\bkeysight\b/i.test(text)) {
+        return 'keysight';
+    }
+    const onDash = text.match(/\bon\s+(?:the\s+)?([A-Za-z][A-Za-z0-9 _-]{2,40})\s+dashboard\b/i);
+    if (onDash?.[1] && !/\buid\b/i.test(onDash[1])) {
+        return onDash[1].trim().toLowerCase();
+    }
+    const forLabel = text.match(/\bfor\s+(?:the\s+)?([A-Za-z][A-Za-z0-9 _-]{2,40})\.?$/i);
+    if (forLabel?.[1] && !isMachineId(forLabel[1])) {
+        return forLabel[1].trim().toLowerCase();
+    }
+    return undefined;
+}
+
+function extractMachineId(text: string): string | undefined {
+    const forMachine = text.match(
+        new RegExp(`\\bfor\\s+(?:the\\s+)?(?:machine\\s+)?(${MACHINE_ID_PATTERN.source})\\b`, 'i')
+    );
+    if (forMachine?.[1] && isMachineId(forMachine[1])) {
+        return forMachine[1];
+    }
+    return findMachineIdsInText(text).find((id) => isMachineId(id));
+}
+
+export function messageDescribesPanelCreate(message: string): boolean {
+    const text = normalizeMessageQuotes(message.trim());
+    if (!text || userWantsDashboardMetricPanels(text)) {
+        return false;
+    }
+    if (extractClaimedVendorDashboardUid(text)) {
+        return false;
+    }
+    // Own-history / peer-band / peer-RF / History Comparison / Grafana alerts need specialized
+    // handlers — never the generic titled-panel create path (PromQL / vector(0) / "already exists").
+    if (
+        messageMentionsGrafanaAlertCreate(text) ||
+        messageMentionsGrafanaAlertUpdate(text) ||
+        messageMentionsOwnHistoryPanel(text) ||
+        messageMentionsPeerBandPanelCreate(text) ||
+        messageMentionsAddPeerRfPanel(text) ||
+        messageMentionsPredictiveAnalyticsPanel(text)
+    ) {
+        return false;
+    }
+    if (!/\b(create|add|make|put|build|need|want)\b/i.test(text)) {
+        return false;
+    }
+    const hasTypedPanel =
+        /\b(bar\s*chart|gauge|stat|time\s*series|timeseries|table|chart)\b/i.test(text) &&
+        (/\bpanel\b/i.test(text) || /\bgauge\b/i.test(text) || /\bchart\b/i.test(text));
+    const hasNamedPanel =
+        /\b(create|add|make|put|build|need|want)\b/i.test(text) &&
+        /\bpanel\b/i.test(text) &&
+        /\b(called|named|titled)\b/i.test(text);
+  return Boolean(extractPanelTitle(text) && (hasTypedPanel || hasNamedPanel || /\bchart\b/i.test(text)));
+}
+
+export function userWantsPanelCreateProgrammatic(message: string, contextDashboardUid?: string): boolean {
+    return parsePanelCreateRequest(message, { contextDashboardUid }) != null;
+}
+
+export function parsePanelCreateRequest(
+    message: string,
+    opts?: { contextDashboardUid?: string }
+): PanelCreateRequest | null {
+    const text = normalizeMessageQuotes(message.trim());
+    if (extractClaimedVendorDashboardUid(text)) {
+        return null;
+    }
+    if (!messageDescribesPanelCreate(text)) {
+        return null;
+    }
+
+    const panelTitle = extractPanelTitle(text);
+    if (!panelTitle) {
+        return null;
+    }
+
+    const dashboardUid = extractAllDashboardUids(text)[0] ?? opts?.contextDashboardUid;
+    const titleLabel = extractTitleLabel(text);
+    const machineId = extractMachineId(text);
+
+    if (!dashboardUid && !titleLabel && !machineId) {
+        return null;
+    }
+
+    return {
+        panelTitle,
+        panelType: inferPanelType(text),
+        dashboardUid,
+        titleLabel,
+        machineId,
+    };
+}
+
+function extractMultiPanelSpecs(text: string): MultiPanelCreateSpec[] {
+    const found: { index: number; panelType: PanelCreateType; panelTitle: string }[] = [];
+    for (const { type, re, defaultTitle } of MULTI_PANEL_TYPE_PATTERNS) {
+        re.lastIndex = 0;
+        let match: RegExpExecArray | null;
+        while ((match = re.exec(text)) !== null) {
+            found.push({ index: match.index, panelType: type, panelTitle: defaultTitle });
+        }
+    }
+    found.sort((a, b) => a.index - b.index);
+    const seen = new Set<PanelCreateType>();
+    const panels: MultiPanelCreateSpec[] = [];
+    for (const entry of found) {
+        if (seen.has(entry.panelType)) {
+            continue;
+        }
+        seen.add(entry.panelType);
+        panels.push({ panelType: entry.panelType, panelTitle: entry.panelTitle });
+    }
+    return panels;
+}
+
+function hasDashboardContext(text: string, contextDashboardUid?: string): boolean {
+    return Boolean(
+        extractAllDashboardUids(text)[0] ??
+            contextDashboardUid ??
+            extractTitleLabel(text) ??
+            extractMachineId(text)
+    );
+}
+
+export function messageDescribesMultiPanelCreate(message: string, contextDashboardUid?: string): boolean {
+    const text = normalizeMessageQuotes(message.trim());
+    if (!text || userWantsDashboardMetricPanels(text)) {
+        return false;
+    }
+    if (extractPanelTitle(text)) {
+        return false;
+    }
+    if (messageDescribesPanelCreate(text)) {
+        return false;
+    }
+    if (!/\b(create|add|make)\b/i.test(text)) {
+        return false;
+    }
+    const panels = extractMultiPanelSpecs(text);
+    if (panels.length < 2) {
+        return false;
+    }
+    return hasDashboardContext(text, contextDashboardUid);
+}
+
+export function userWantsMultiPanelCreateProgrammatic(
+    message: string,
+    contextDashboardUid?: string
+): boolean {
+    return parseMultiPanelCreateRequest(message, { contextDashboardUid }) != null;
+}
+
+export function parseMultiPanelCreateRequest(
+    message: string,
+    opts?: { contextDashboardUid?: string }
+): MultiPanelCreateRequest | null {
+    const text = normalizeMessageQuotes(message.trim());
+    if (!messageDescribesMultiPanelCreate(text, opts?.contextDashboardUid)) {
+        return null;
+    }
+
+    const panels = extractMultiPanelSpecs(text);
+    if (panels.length < 2) {
+        return null;
+    }
+
+    const dashboardUid = extractAllDashboardUids(text)[0] ?? opts?.contextDashboardUid;
+    const titleLabel = extractTitleLabel(text);
+    const machineId = extractMachineId(text);
+
+    if (!dashboardUid && !titleLabel && !machineId) {
+        return null;
+    }
+
+    return {
+        dashboardUid,
+        titleLabel,
+        machineId,
+        panels,
+    };
+}
+
+export function formatPanelCreateClarification(message: string): string {
+    return (
+        `### Need clarification\n\n` +
+        `Graft understood a panel-create request but needs the dashboard.\n\n` +
+        `**Example:** \`Create a bar chart panel called "Cartridge Comparison" for Keysight.\`\n` +
+        `Or include dashboard uid: \`... on dashboard uid=cfo0wckufbdhce\``
+    );
+}
+
+export function formatMultiPanelCreateClarification(message: string): string {
+    return (
+        `### Need clarification\n\n` +
+        `Graft understood a multi-panel create request but needs the dashboard.\n\n` +
+        `**Example:** \`Create a gauge panel, time series panel, table panel, and stat panel for dashboard with UID = cfo0wckufbdhce.\``
+    );
+}

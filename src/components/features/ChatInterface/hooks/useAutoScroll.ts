@@ -9,6 +9,7 @@ interface UseAutoScrollReturn {
     messageListRef: RefObject<HTMLDivElement>;
     scrollToBottom: (behavior?: ScrollBehavior) => void;
     handleScroll: () => void;
+    /** Scrolls the message list all the way to the latest content */
     scrollDownPage: () => void;
     showScrollButton: boolean;
     shouldAutoScroll: boolean;
@@ -40,9 +41,13 @@ export const useAutoScroll = (props: UseAutoScrollProps): UseAutoScrollReturn =>
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
-        // Use requestAnimationFrame for smoother scrolling
+        const list = messageListRef.current;
+        if (!list) {
+            return;
+        }
+        // Scroll the message list container (not scrollIntoView — the anchor was in the input area)
         requestAnimationFrame(() => {
-            messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+            list.scrollTo({ top: list.scrollHeight, behavior });
         });
     }, []);
 
@@ -57,11 +62,10 @@ export const useAutoScroll = (props: UseAutoScrollProps): UseAutoScrollReturn =>
     }, [setShowScrollButton, setShouldAutoScroll]);
 
     const scrollDownPage = useCallback(() => {
-        if (messageListRef.current && typeof messageListRef.current.scrollTo === 'function') {
-            const { scrollTop, clientHeight } = messageListRef.current;
-            messageListRef.current.scrollTo({ top: scrollTop + clientHeight, behavior: 'smooth' });
-        }
-    }, []);
+        setShouldAutoScroll(true);
+        setShowScrollButton(false);
+        scrollToBottom('smooth');
+    }, [scrollToBottom, setShouldAutoScroll, setShowScrollButton]);
 
     return {
         messagesEndRef,

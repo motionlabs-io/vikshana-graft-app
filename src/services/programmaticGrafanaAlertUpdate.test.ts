@@ -1,0 +1,251 @@
+import { of, throwError } from 'rxjs';
+import { parseGrafanaAlertUpdateRequest } from './grafanaAlertParse';
+import { runProgrammaticGrafanaAlertUpdate } from './programmaticGrafanaAlertUpdate';
+
+const mockFetch = jest.fn();
+
+jest.mock('@grafana/runtime', () => ({
+    getBackendSrv: () => ({
+        fetch: (...args: unknown[]) => mockFetch(...args),
+    }),
+}));
+
+describe('runProgrammaticGrafanaAlertUpdate', () => {
+    beforeEach(() => {
+        mockFetch.mockReset();
+    });
+
+    const prompt =
+        'Update the alert rule named GraftAI Rule. Add one label: key GraftAI Labels, value Alex. Add summary "Module 1 Current Out of Bounds" and description "Module 1 Actual Value is Outside the Own History". Add custom annotation name "Custom Annotation Name" with content "Custom Annotation Content". Configure the rule to notify the Alex Test Email contact point.';
+
+    it('patches labels, annotations, and contact point on an existing rule by name', async () => {
+        let putBody: Record<string, unknown> | undefined;
+        mockFetch.mockImplementation((req: { url: string; method?: string; data?: unknown }) => {
+            if (req.url.includes('/alert-rules') && (req.method ?? 'GET') === 'GET' && !/\/alert-rules\/[\w-]+$/.test(req.url)) {
+                return of({
+                    data: [
+                        {
+                            uid: 'rule-existing',
+                            title: 'GraftAI Rule',
+                            folderUID: 'folder-graftai',
+                            ruleGroup: 'GraftAI Alert Groups',
+                            labels: { graft: 'true' },
+                            annotations: { summary: 'old' },
+                        },
+                    ],
+                });
+            }
+            if (/\/alert-rules\/rule-existing$/.test(req.url) && (req.method ?? 'GET') === 'GET') {
+                return of({
+                    data: {
+                        uid: 'rule-existing',
+                        title: 'GraftAI Rule',
+                        folderUID: 'folder-graftai',
+                        ruleGroup: 'GraftAI Alert Groups',
+                        labels: { graft: 'true' },
+                        annotations: { summary: 'old', __dashboardUid__: 'idHkqdqnk' },
+                        condition: 'H',
+                        data: [],
+                        for: '5m',
+                        noDataState: 'NoData',
+                        execErrState: 'Alerting',
+                        orgId: 1,
+                    },
+                });
+            }
+            if (req.url.includes('/contact-points') && (req.method ?? 'GET') === 'GET') {
+                return of({ data: [{ name: 'Alex Test Email', type: 'email' }] });
+            }
+            if (/\/alert-rules\/rule-existing$/.test(req.url) && req.method === 'PUT') {
+                putBody = req.data as Record<string, unknown>;
+                return of({ data: { uid: 'rule-existing', title: 'GraftAI Rule' } });
+            }
+            return throwError(() => new Error(`unexpected url ${req.url} method ${req.method}`));
+        });
+
+        const req = parseGrafanaAlertUpdateRequest(prompt)!;
+        const result = await runProgrammaticGrafanaAlertUpdate(req, 195);
+        expect(result.ok).toBe(true);
+        expect(result.ruleUid).toBe('rule-existing');
+        expect(result.contactPoint).toBe('Alex Test Email');
+        expect(putBody?.labels).toEqual({ graft: 'true', 'GraftAI Labels': 'Alex' });
+        const annotations = putBody?.annotations as Record<string, string>;
+        expect(annotations.summary).toBe('Module 1 Current Out of Bounds');
+        expect(annotations.description).toBe('Module 1 Actual Value is Outside the Own History');
+        expect(annotations['Custom Annotation Name']).toBe('Custom Annotation Content');
+        expect(annotations.__dashboardUid__).toBe('idHkqdqnk');
+        expect(putBody?.notification_settings).toEqual({ receiver: 'Alex Test Email' });
+    });
+
+    it('moves the rule into a new evaluation group and sets the interval', async () => {
+        const prompt =
+            'Update the alert rule named GraftAI Rule. Create a new evaluation group called "Test Eval Group" that evaluates every minute. Add GraftAI Rule to the Test Eval Group.';
+        let putBody: Record<string, unknown> | undefined;
+        let groupPut: { interval?: number; title?: string; folderUid?: string } | undefined;
+        let verifiedOnce = false;
+
+        mockFetch.mockImplementation((req: { url: string; method?: string; data?: unknown }) => {
+            if (
+                req.url.includes('/alert-rules') &&
+                (req.method ?? 'GET') === 'GET' &&
+                !/\/alert-rules\/[\w-]+$/.test(req.url)
+            ) {
+                return of({
+                    data: [
+                        {
+                            uid: 'rule-existing',
+                            title: 'GraftAI Rule',
+                            folderUID: 'folder-graftai',
+                            ruleGroup: 'graft-idHkqdqnk-105',
+                        },
+                    ],
+                });
+            }
+            if (/\/alert-rules\/rule-existing$/.test(req.url) && (req.method ?? 'GET') === 'GET') {
+                if (verifiedOnce || putBody) {
+                    // Post-save verification — rule is now in the new group.
+                    return of({
+                        data: {
+                            uid: 'rule-existing',
+                            title: 'GraftAI Rule',
+                            folderUID: 'folder-graftai',
+                            ruleGroup: 'Test Eval Group',
+                            for: '1m',
+                        },
+                    });
+                }
+                return of({
+                    data: {
+                        uid: 'rule-existing',
+                        title: 'GraftAI Rule',
+                        folderUID: 'folder-graftai',
+                        ruleGroup: 'graft-idHkqdqnk-105',
+                        for: '5m',
+                        labels: {},
+                        annotations: {},
+                        condition: 'H',
+                        data: [],
+                        noDataState: 'NoData',
+                        execErrState: 'Alerting',
+                        orgId: 1,
+                    },
+                });
+            }
+            if (/\/alert-rules\/rule-existing$/.test(req.url) && req.method === 'PUT') {
+                putBody = req.data as Record<string, unknown>;
+                verifiedOnce = true;
+                return of({ data: { uid: 'rule-existing', title: 'GraftAI Rule' } });
+            }
+            if (req.url.includes('/rule-groups/') && (req.method ?? 'GET') === 'GET') {
+                // New group may 404 initially — simulate empty/new group.
+                return of({
+                    data: {
+                        title: 'Test Eval Group',
+                        folderUid: 'folder-graftai',
+                        interval: 60,
+                        rules: [],
+                    },
+                });
+            }
+            if (req.url.includes('/rule-groups/') && req.method === 'PUT') {
+                groupPut = req.data as { interval?: number; title?: string; folderUid?: string };
+                return of({ data: groupPut });
+            }
+            return throwError(() => new Error(`unexpected url ${req.url} method ${req.method}`));
+        });
+
+        const req = parseGrafanaAlertUpdateRequest(prompt)!;
+        const result = await runProgrammaticGrafanaAlertUpdate(req, 196);
+        expect(result.ok).toBe(true);
+        expect(result.ruleGroup).toBe('Test Eval Group');
+        expect(result.ruleGroupMoved).toBe(true);
+        expect(result.evalIntervalSeconds).toBe(60);
+        expect(putBody?.ruleGroup).toBe('Test Eval Group');
+        // Pending was already 5m (>= 1m interval), so no raise needed — still may set for.
+        expect(groupPut?.interval).toBe(60);
+        expect(groupPut?.title).toBe('Test Eval Group');
+    });
+
+    it('returns an error when the named rule does not exist', async () => {
+        mockFetch.mockImplementation((req: { url: string; method?: string }) => {
+            if (req.url.includes('/alert-rules') && (req.method ?? 'GET') === 'GET') {
+                return of({ data: [] });
+            }
+            return throwError(() => new Error(`unexpected url ${req.url}`));
+        });
+        const req = parseGrafanaAlertUpdateRequest(prompt)!;
+        const result = await runProgrammaticGrafanaAlertUpdate(req, 195);
+        expect(result.ok).toBe(false);
+        expect(result.error).toMatch(/was not found/i);
+    });
+
+    it('patches description when the alert is identified by panel title + dashboard UID', async () => {
+        const changePrompt =
+            'Change the alert for the panel titled Module 2 Pressure — Alert Test Peer Band ±2σ on the dashboard with the UID = afq7tc6hl1m9sb to have the description of "Alert on Module 2"';
+        let putBody: Record<string, unknown> | undefined;
+        mockFetch.mockImplementation((req: { url: string; method?: string; data?: unknown }) => {
+            if (
+                req.url.includes('/alert-rules') &&
+                (req.method ?? 'GET') === 'GET' &&
+                !/\/alert-rules\/[\w-]+$/.test(req.url)
+            ) {
+                return of({
+                    data: [
+                        {
+                            uid: 'rule-peer-band',
+                            title: 'Module 2 Pressure — Alert Test Peer Band ±2σ — outside ±2σ',
+                            folderUID: 'folder-1',
+                            ruleGroup: 'graft-afq7tc6hl1m9sb-3',
+                            annotations: {
+                                __dashboardUid__: 'afq7tc6hl1m9sb',
+                                __panelId__: '3',
+                                description: 'old description',
+                            },
+                        },
+                    ],
+                });
+            }
+            if (/\/alert-rules\/rule-peer-band$/.test(req.url) && (req.method ?? 'GET') === 'GET') {
+                return of({
+                    data: {
+                        uid: 'rule-peer-band',
+                        title: 'Module 2 Pressure — Alert Test Peer Band ±2σ — outside ±2σ',
+                        folderUID: 'folder-1',
+                        ruleGroup: 'graft-afq7tc6hl1m9sb-3',
+                        annotations: {
+                            __dashboardUid__: 'afq7tc6hl1m9sb',
+                            __panelId__: '3',
+                            description: 'old description',
+                        },
+                        condition: 'H',
+                        data: [],
+                        for: '1m',
+                        noDataState: 'NoData',
+                        execErrState: 'Alerting',
+                        orgId: 1,
+                    },
+                });
+            }
+            if (/\/alert-rules\/rule-peer-band$/.test(req.url) && req.method === 'PUT') {
+                putBody = req.data as Record<string, unknown>;
+                return of({
+                    data: {
+                        uid: 'rule-peer-band',
+                        title: 'Module 2 Pressure — Alert Test Peer Band ±2σ — outside ±2σ',
+                    },
+                });
+            }
+            return throwError(() => new Error(`unexpected url ${req.url} method ${req.method}`));
+        });
+
+        const req = parseGrafanaAlertUpdateRequest(changePrompt)!;
+        expect(req.ruleTitle).toBeUndefined();
+        expect(req.panelTitle).toBe('Module 2 Pressure — Alert Test Peer Band ±2σ');
+        const result = await runProgrammaticGrafanaAlertUpdate(req, 205);
+        expect(result.ok).toBe(true);
+        expect(result.description).toBe('Alert on Module 2');
+        const annotations = putBody?.annotations as Record<string, string>;
+        expect(annotations.description).toBe('Alert on Module 2');
+        expect(annotations.__dashboardUid__).toBe('afq7tc6hl1m9sb');
+    });
+});

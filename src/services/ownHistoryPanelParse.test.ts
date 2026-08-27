@@ -1,0 +1,105 @@
+import {
+    catalogOwnHistorySignal,
+    extractOwnHistoryMetricLabel,
+    messageMentionsOwnHistoryPanel,
+    parseAddOwnHistoryPanelRequest,
+} from './ownHistoryPanelParse';
+import { messageDescribesPanelCreate, parsePanelCreateRequest } from './panelCreateParse';
+
+describe('ownHistoryPanelParse — target metric', () => {
+    it('uses Module 4 Current, not "the current trend", for write-up own-history wording', () => {
+        const prompt =
+            'Create a machine learning panel for Module 4 Current that compares the current trend against its own history';
+        expect(extractOwnHistoryMetricLabel(prompt)).toBe('Module 4 Current');
+        const req = parseAddOwnHistoryPanelRequest(prompt, { contextDashboardUid: 'idHkqdqnk' });
+        expect(req?.moduleNumber).toBe(4);
+        expect(req?.metricLabel).toBeUndefined();
+    });
+
+    it('treats "against its historical values" as own-history (write-up wording)', () => {
+        const prompt =
+            'Create a machine learning panel that compares Sensing Voltage against its historical values';
+        expect(messageMentionsOwnHistoryPanel(prompt)).toBe(true);
+        expect(
+            parseAddOwnHistoryPanelRequest(prompt, { contextDashboardUid: 'idHkqdqnk' })?.metricLabel?.toLowerCase()
+        ).toMatch(/sensing voltage/);
+    });
+
+    it('parses "panel of X compared to its historical values" with an open dashboard', () => {
+        const prompt =
+            'I want a machine learning panel of Sensing Voltage compared to its historical values on dashboard idHkqdqnk.';
+        expect(messageMentionsOwnHistoryPanel(prompt)).toBe(true);
+        expect(
+            parseAddOwnHistoryPanelRequest(prompt, { contextDashboardUid: 'idHkqdqnk' })?.metricLabel?.toLowerCase()
+        ).toMatch(/sensing voltage/);
+    });
+
+    it('extracts a named signal from the prompt', () => {
+        expect(
+            extractOwnHistoryMetricLabel(
+                'Create a vs. Own History (±2σ) machine learning panel for Pressure on the dashboard with UID = afq7tc6hl1m9sb.'
+            )
+        ).toBe('Pressure');
+    });
+
+    it('extracts a module-current phrase', () => {
+        expect(
+            extractOwnHistoryMetricLabel(
+                'Create a vs. Own History (±2σ) panel for Module 3 Current for the dashboard with UID = afq7tc6hl1m9sb.'
+            )
+        ).toBe('Module 3 Current');
+    });
+
+    it('routes a non-module metric to metricLabel (not Module 5)', () => {
+        const req = parseAddOwnHistoryPanelRequest(
+            'Create a vs. Own History (±2σ) machine learning panel for Pressure on the dashboard with UID = afq7tc6hl1m9sb.'
+        );
+        expect(req?.dashboardUid).toBe('afq7tc6hl1m9sb');
+        expect(req?.metricLabel).toBe('Pressure');
+        expect(req?.moduleNumber).toBeUndefined();
+    });
+
+    it('routes a module current to moduleNumber', () => {
+        const req = parseAddOwnHistoryPanelRequest(
+            'Create a vs. Own History (±2σ) panel for Module 3 Current for the dashboard with UID = afq7tc6hl1m9sb.'
+        );
+        expect(req?.moduleNumber).toBe(3);
+        expect(req?.metricLabel).toBeUndefined();
+    });
+
+    it('catalogs Sensing Voltage, Average Sensing Voltage, and plant Temperature without a source panel', () => {
+        expect(catalogOwnHistorySignal('Sensing Voltage')?.field).toBe('Cartridge_Sensing_Voltage');
+        expect(catalogOwnHistorySignal('cartridge sensing voltage')?.field).toBe('Cartridge_Sensing_Voltage');
+        expect(catalogOwnHistorySignal('Average Sensing Voltage')?.field).toBe('Average_Sensing_Voltage');
+        expect(catalogOwnHistorySignal('plant temperature')?.field).toBe('Temperature_C');
+        expect(catalogOwnHistorySignal('Temperature')?.field).toBe('Temperature_C');
+    });
+
+    it('does not catalog unknown plant labels (Pressure, Conductivity, Humidity)', () => {
+        expect(catalogOwnHistorySignal('Pressure')).toBeUndefined();
+        expect(catalogOwnHistorySignal('Conductivity')).toBeUndefined();
+        expect(catalogOwnHistorySignal('Humidity')).toBeUndefined();
+        expect(catalogOwnHistorySignal('the usual sensor')).toBeUndefined();
+    });
+
+    it('does not invent Module 5 when no target is named', () => {
+        const req = parseAddOwnHistoryPanelRequest(
+            'Add a vs. Own History (±2σ) panel on the dashboard with UID = afq7tc6hl1m9sb.'
+        );
+        expect(req).toBeNull();
+    });
+
+    const alertTestPrompt =
+        'Create a new time series panel titled "Module 1 Current — Alert Test Own History ±2σ" on the dashboard with UID = afq7tc6hl1m9sb. Create four visible lines: Module 1 Actual = the current value over time Historical Mean = average of Module1_Current_A Upper Bound = Historical Mean + 2 × Standard Deviation Lower Bound = Historical Mean - 2 × Standard Deviation Make sure the Upper Bound and Lower Bound are calculated in the Flux query itself, not only in the legend or panel name.';
+
+    it('parses the Alert Test Own History titled prompt as own-history (not generic panel create)', () => {
+        expect(messageMentionsOwnHistoryPanel(alertTestPrompt)).toBe(true);
+        expect(messageDescribesPanelCreate(alertTestPrompt)).toBe(false);
+        expect(parsePanelCreateRequest(alertTestPrompt)).toBeNull();
+        const req = parseAddOwnHistoryPanelRequest(alertTestPrompt);
+        expect(req?.dashboardUid).toBe('afq7tc6hl1m9sb');
+        expect(req?.moduleNumber).toBe(1);
+        expect(req?.panelTitle).toBe('Module 1 Current — Alert Test Own History ±2σ');
+        expect(req?.metricLabel).toBeUndefined();
+    });
+});

@@ -144,6 +144,12 @@ align-items: center;
 justify-content: center;
 cursor: pointer;
 transition: all 0.2s;
+touch-action: manipulation;
+-webkit-tap-highlight-color: transparent;
+
+    svg {
+  pointer-events: none;
+}
     
     &:hover {
   background: #ed6f3e;
@@ -181,8 +187,16 @@ font-size: 14px;
 font-size: 12px;
 color: ${theme.colors.text.secondary};
 `,
+  messagePane: css`
+flex: 1;
+min-height: 0;
+position: relative;
+display: flex;
+flex-direction: column;
+`,
   messageList: css`
-flex-grow: 1;
+flex: 1;
+min-height: 0;
 overflow-y: auto;
 padding: ${theme.spacing(2)};
 display: flex;
@@ -322,9 +336,8 @@ padding: ${theme.spacing(1)};
 `,
   scrollButton: css`
 position: absolute;
-bottom: 120px;
-left: 50%;
-transform: translateX(-50%);
+bottom: ${theme.spacing(2)};
+right: ${theme.spacing(3)};
 width: 40px;
 height: 40px;
 border-radius: 50%;
@@ -539,6 +552,7 @@ justify-content: center;
   sendIconButton: css`
 cursor: pointer;
 background: ${theme.colors.primary.main};
+border: none;
 border-radius: 50%;
 width: 32px;
 height: 32px;
@@ -546,10 +560,21 @@ display: flex;
 align-items: center;
 justify-content: center;
 transition: all 0.2s;
+touch-action: manipulation;
+-webkit-tap-highlight-color: transparent;
+
+    svg {
+  pointer-events: none;
+}
     
     &:hover {
   background: ${theme.colors.primary.shade};
   transform: scale(1.1);
+}
+
+    &:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 `,
   chatHeader: css`
@@ -569,15 +594,31 @@ align-items: center;
 gap: ${theme.spacing(1)};
 z-index: 1;
 `,
+  chatTitleBlock: css`
+position: absolute;
+left: 50%;
+transform: translateX(-50%);
+display: flex;
+flex-direction: column;
+align-items: center;
+gap: ${theme.spacing(0.5)};
+max-width: calc(100% - 280px);
+`,
   chatTitle: css`
 font-size: ${theme.typography.h4.fontSize};
 font-weight: ${theme.typography.fontWeightMedium};
 color: ${theme.colors.text.primary};
 cursor: pointer;
-position: absolute;
-left: 50%;
-transform: translateX(-50%);
 white-space: nowrap;
+`,
+  buildBadgeLanding: css`
+margin-top: ${theme.spacing(1)};
+margin-bottom: ${theme.spacing(1)};
+`,
+  sendHint: css`
+font-size: 12px;
+color: ${theme.colors.error.text};
+margin-top: ${theme.spacing(0.5)};
 `,
   loadingContainer: css`
 display: flex;

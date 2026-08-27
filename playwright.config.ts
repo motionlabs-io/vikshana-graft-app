@@ -3,6 +3,7 @@ import { defineConfig, devices } from '@playwright/test';
 import { dirname } from 'node:path';
 
 const pluginE2eAuth = `${dirname(require.resolve('@grafana/plugin-e2e'))}/auth`;
+const graftAuthFile = process.env.GRAFANA_STORAGE_STATE || 'playwright/.auth/admin.json';
 
 /**
  * Read environment variables from file.
@@ -27,6 +28,7 @@ export default defineConfig<PluginOptions>({
   use: {
     /* Base URL to use in actions like `await page.goto('/')`. */
     baseURL: process.env.GRAFANA_URL || 'http://localhost:3000',
+    ignoreHTTPSErrors: true,
 
     /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
     trace: 'on-first-retry',
@@ -43,11 +45,27 @@ export default defineConfig<PluginOptions>({
     // 2. Run tests in Google Chrome. Every test will start authenticated as admin user.
     {
       name: 'chromium',
+      testMatch: /^(?!.*graftRegression).*\.spec\.ts$/,
       use: {
         ...devices['Desktop Chrome'],
         storageState: 'playwright/.auth/admin.json',
       },
       dependencies: ['auth'],
+    },
+    // 3. Graft regression E2E against real Grafana (EC2). Uses explicit admin credentials.
+    {
+      name: 'graft-regression-auth',
+      testMatch: /auth\.graftRegression\.setup\.ts/,
+    },
+    {
+      name: 'graft-regression',
+      testMatch: /graftRegression\.spec\.ts/,
+      fullyParallel: false,
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: graftAuthFile,
+      },
+      dependencies: ['graft-regression-auth'],
     },
   ],
 });

@@ -7,6 +7,12 @@ export interface ToolExecution {
     name: string;
     status: 'pending' | 'success' | 'error';
     error?: string;
+    /** Matches OpenAI tool_call id for reliable status updates */
+    toolCallId?: string;
+    /** Short human-readable outcome (e.g. saved dashboard version) */
+    summary?: string;
+    /** Markdown table shown in chat (uid / panel index) — not sent back to the LLM */
+    userReference?: string;
 }
 
 /**

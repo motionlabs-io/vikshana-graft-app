@@ -1,4 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { GrafanaTheme2 } from '@grafana/data';
 import { useStyles2, Icon } from '@grafana/ui';
 import { css } from '@emotion/css';
@@ -9,15 +11,15 @@ interface ToolCallContainerProps {
     theme: GrafanaTheme2;
 }
 
-// Compute error indices from tool executions
-const getErrorIndices = (toolExecutions: ToolExecution[]): Set<number> => {
-    const errorIndices = new Set<number>();
+// Expand errors and dashboard reference tables by default
+const getInitiallyExpandedIndices = (toolExecutions: ToolExecution[]): Set<number> => {
+    const expanded = new Set<number>();
     toolExecutions.forEach((exec, index) => {
-        if (exec.status === 'error') {
-            errorIndices.add(index);
+        if (exec.status === 'error' || exec.userReference) {
+            expanded.add(index);
         }
     });
-    return errorIndices;
+    return expanded;
 };
 
 export const ToolCallContainer: React.FC<ToolCallContainerProps> = ({ toolExecutions, theme }) => {
@@ -25,24 +27,25 @@ export const ToolCallContainer: React.FC<ToolCallContainerProps> = ({ toolExecut
     const manuallyCollapsed = useRef<Set<number>>(new Set());
     const styles = useStyles2(getStyles);
 
-    // Compute expanded items: all errors minus manually collapsed
-    const errorIndices = useMemo(() => getErrorIndices(toolExecutions), [toolExecutions]);
-    const [expandedItems, setExpandedItems] = useState<Set<number>>(() => errorIndices);
+    const autoExpandIndices = useMemo(
+        () => getInitiallyExpandedIndices(toolExecutions),
+        [toolExecutions]
+    );
+    const [expandedItems, setExpandedItems] = useState<Set<number>>(() => autoExpandIndices);
 
-    // Sync expanded items when new errors appear
-    const prevErrorIndicesRef = useRef<Set<number>>(errorIndices);
+    const prevAutoExpandRef = useRef<Set<number>>(autoExpandIndices);
     useEffect(() => {
-        const prevErrors = prevErrorIndicesRef.current;
-        const newErrors = new Set<number>();
-        errorIndices.forEach(idx => {
-            if (!prevErrors.has(idx)) {
-                newErrors.add(idx);
+        const prev = prevAutoExpandRef.current;
+        const newlyExpanded = new Set<number>();
+        autoExpandIndices.forEach((idx) => {
+            if (!prev.has(idx)) {
+                newlyExpanded.add(idx);
             }
         });
-        if (newErrors.size > 0) {
-            setExpandedItems(prev => {
-                const next = new Set(prev);
-                newErrors.forEach(idx => {
+        if (newlyExpanded.size > 0) {
+            setExpandedItems((prevExpanded) => {
+                const next = new Set(prevExpanded);
+                newlyExpanded.forEach((idx) => {
                     if (!manuallyCollapsed.current.has(idx)) {
                         next.add(idx);
                     }
@@ -50,8 +53,8 @@ export const ToolCallContainer: React.FC<ToolCallContainerProps> = ({ toolExecut
                 return next;
             });
         }
-        prevErrorIndicesRef.current = errorIndices;
-    }, [errorIndices]);
+        prevAutoExpandRef.current = autoExpandIndices;
+    }, [autoExpandIndices]);
 
     const toggleExpand = (index: number) => {
         setExpandedItems(prev => {
@@ -74,13 +77,14 @@ export const ToolCallContainer: React.FC<ToolCallContainerProps> = ({ toolExecut
             {toolExecutions.map((exec, index) => {
                 const isExpanded = expandedItems.has(index);
                 const hasError = exec.status === 'error';
+                const hasDetails = hasError || Boolean(exec.summary) || Boolean(exec.userReference);
 
                 return (
                     <div key={index} className={styles.toolCallContainer}>
                         <div
                             className={styles.toolCallHeader}
-                            onClick={() => hasError && toggleExpand(index)}
-                            style={{ cursor: hasError ? 'pointer' : 'default' }}
+                            onClick={() => hasDetails && toggleExpand(index)}
+                            style={{ cursor: hasDetails ? 'pointer' : 'default' }}
                         >
                             <div className={styles.toolCallStatus}>
                                 {exec.status === 'pending' && (
@@ -93,14 +97,29 @@ export const ToolCallContainer: React.FC<ToolCallContainerProps> = ({ toolExecut
                                     <span className={styles.toolCallError}>✗</span>
                                 )}
                             </div>
-                            <span className={styles.toolCallName}>{exec.name}</span>
-                            {hasError && (
+                            <span className={styles.toolCallName}>
+                                {exec.name}
+                                {exec.summary && exec.status === 'success' && (
+                                    <span className={styles.toolCallSummary}> — {exec.summary}</span>
+                                )}
+                            </span>
+                            {hasDetails && (
                                 <Icon name={isExpanded ? 'angle-down' : 'angle-right'} size="sm" />
                             )}
                         </div>
                         {hasError && isExpanded && exec.error && (
                             <div className={styles.toolCallErrorDetails}>
                                 {exec.error}
+                            </div>
+                        )}
+                        {!hasError && exec.summary && isExpanded && !exec.userReference && (
+                            <div className={styles.toolCallSuccessDetails}>
+                                {exec.summary}
+                            </div>
+                        )}
+                        {exec.userReference && isExpanded && (
+                            <div className={styles.toolCallReference}>
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{exec.userReference}</ReactMarkdown>
                             </div>
                         )}
                     </div>
@@ -176,5 +195,39 @@ const getStyles = (theme: GrafanaTheme2) => ({
     font-family: ${theme.typography.fontFamilyMonospace};
     white-space: pre-wrap;
     word-break: break-word;
+  `,
+    toolCallSummary: css`
+    color: ${theme.colors.text.secondary};
+    font-weight: normal;
+  `,
+    toolCallSuccessDetails: css`
+    padding: 8px 12px;
+    border-top: 1px solid ${theme.colors.border.weak};
+    background: ${theme.colors.background.secondary};
+    color: ${theme.colors.success.text};
+    font-size: 12px;
+    font-family: ${theme.typography.fontFamilyMonospace};
+  `,
+    toolCallReference: css`
+    padding: 10px 12px;
+    border-top: 1px solid ${theme.colors.border.weak};
+    background: ${theme.colors.background.secondary};
+    font-size: 12px;
+    color: ${theme.colors.text.primary};
+    overflow-x: auto;
+
+    table {
+      border-collapse: collapse;
+      margin: 8px 0;
+      font-size: 12px;
+    }
+    th,
+    td {
+      border: 1px solid ${theme.colors.border.medium};
+      padding: 4px 8px;
+    }
+    p {
+      margin: 4px 0;
+    }
   `,
 });

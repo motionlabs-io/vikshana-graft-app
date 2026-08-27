@@ -1,0 +1,303 @@
+import {
+    formatGrafanaAlertGuidanceReply,
+    messageMentionsGrafanaAlertCreate,
+    messageMentionsGrafanaAlertUpdate,
+    messageMentionsGrafanaEvalGroupIntervalChange,
+    parseGrafanaAlertCreateRequest,
+    parseGrafanaAlertUpdateRequest,
+    parseGrafanaEvalGroupIntervalRequest,
+} from './grafanaAlertParse';
+import { parseAddOwnHistoryPanelRequest } from './ownHistoryPanelParse';
+import { userWantsDashboardReviewOnly } from './dashboardReviewParse';
+import { isSimpleConversationalMessage, messageHasProgrammaticHandler } from './programmaticChatIntents';
+
+describe('grafanaAlertParse', () => {
+    const OWN_HISTORY_ALERT_PROMPT =
+        'Create a Grafana alert for the panel titled "Module 2 Current — Alert Test Own History ±2σ" on the dashboard with UID afq7tc6hl1m9sb. Configure the alert to trigger when the Module 2 Actual value is greater than the Upper Bound (±2σ) or less than the Lower Bound (±2σ). Use the existing queries in the panel and notify the Alex Test Email contact point.';
+
+    const MANAGED_RULE_PROMPT =
+        'Create a Grafana-managed alert rule for the panel titled "Module 2 Current — Alert Test Own History ±2σ" on the dashboard with UID = afq7tc6hl1m9sb. The alert should: Reduce the Actual, Upper Bound, and Lower Bound queries using the Last value. Trigger when Actual > Upper Bound OR Actual < Lower Bound. Evaluate every minute. Require the condition to be true for one minute. Send notifications to Alex Test Email.';
+
+    const PANEL_CREATE_WITH_ALERT_TEST_TITLE =
+        'Create a new time series panel titled "Module 1 Current — Alert Test Own History ±2σ" on the dashboard with UID = afq7tc6hl1m9sb. Create four visible lines: Module 1 Actual = the current value over time Historical Mean = average of Module1_Current_A Upper Bound = Historical Mean + 2 × Standard Deviation Lower Bound = Historical Mean - 2 × Standard Deviation Make sure the Upper Bound and Lower Bound are calculated in the Flux query itself, not only in the legend or panel name.';
+
+    it('detects the failed Own History alert prompt', () => {
+        expect(messageMentionsGrafanaAlertCreate(OWN_HISTORY_ALERT_PROMPT)).toBe(true);
+        const req = parseGrafanaAlertCreateRequest(OWN_HISTORY_ALERT_PROMPT);
+        expect(req?.dashboardUid).toBe('afq7tc6hl1m9sb');
+        expect(req?.panelTitle).toBe('Module 2 Current — Alert Test Own History ±2σ');
+        expect(req?.contactPoint).toBe('Alex Test Email');
+        expect(req?.conditionSummary).toMatch(/Actual > Upper Bound/i);
+    });
+
+    it('detects the failed Grafana-managed alert rule prompt', () => {
+        expect(messageMentionsGrafanaAlertCreate(MANAGED_RULE_PROMPT)).toBe(true);
+        const req = parseGrafanaAlertCreateRequest(MANAGED_RULE_PROMPT);
+        expect(req?.dashboardUid).toBe('afq7tc6hl1m9sb');
+        expect(req?.panelTitle).toBe('Module 2 Current — Alert Test Own History ±2σ');
+        expect(req?.contactPoint).toBe('Alex Test Email');
+        expect(req?.every).toBe('1m');
+        expect(req?.pendingFor).toBe('1m');
+    });
+
+    it('parses RandomForest vs Peers alert create (operator wording, truncated UID)', () => {
+        const prompt =
+            'Create a Grafana-managed alert for the panel titled "Module 2 Current — RandomForest vs Peers" on the dashboard with UID idHkqdqnk. Inspect the existing panel queries and determine how the RandomForest model identifies anomalous behavior. Use the existing RandomForest anomaly score, prediction, or anomaly classification from the panel as the basis for the alert. Configure the alert to trigger when the RandomForest model identifies Module 2 Current as anomalous compared with its peer modules. The anomalous condition must remain true for longer than 1 minute before the alert fires.Modify the panel queries as needed so they are compatible with Grafana Alerting. Do not invent an arbitrary RandomForest threshold or fake model output. If the panel does not contain sufficient RandomForest output to determine whether Module 2 is anomalous, explain what is missing instead of creating an invalid alert. Configure the alert to notify the Alex Test Email contact point.';
+        expect(messageMentionsGrafanaAlertCreate(prompt)).toBe(true);
+        const req = parseGrafanaAlertCreateRequest(prompt);
+        expect(req?.dashboardUid).toBe('idHkqdqnk');
+        expect(req?.panelTitle).toBe('Module 2 Current — RandomForest vs Peers');
+        expect(req?.contactPoint).toBe('Alex Test Email');
+        expect(req?.peerRfAlert).toBe(true);
+        expect(req?.pendingFor).toBe('1m');
+        expect(req?.conditionSummary).toMatch(/RandomForest vs Peers/i);
+        expect(messageHasProgrammaticHandler(prompt)).toBe(true);
+        const guidance = formatGrafanaAlertGuidanceReply(req!, 213, 'Panel titled **Module 2 Current — RandomForest vs Peers** was not found');
+        expect(guidance).toContain('Need clarification');
+        expect(guidance).toContain('RandomForest vs Peers');
+        expect(guidance).not.toContain('typical Own History layout');
+        expect(guidance).not.toContain('how to create this');
+        expect(guidance).toMatch(/will \*\*not\*\* invent/i);
+        expect(
+            parseGrafanaAlertCreateRequest('Create a Grafana-managed alert for the panel titled "Module 2 Current — RandomForest vs Peers". Notify Alex Test Email.', {
+                contextDashboardUid: 'idHkqdqnkmfv',
+            })?.dashboardUid
+        ).toBe('idHkqdqnkmfv');
+    });
+
+    // Production: alert-for-existing Peer Band panel was mis-routed as panel create → "already exists".
+    const PEER_BAND_PRESSURE_ALERT_PROMPT =
+        'Create a Grafana-managed alert for the panel titled "Module 2 Pressure — Alert Test Peer Band ±2σ" on the dashboard with UID = afq7tc6hl1m9sb. Configure the alert to trigger when the Module 1 Actual value is greater than the Upper Bound (±2σ) or less than the Lower Bound (±2σ).  Modify the panel queries as needed so they are compatible with Grafana Alerting. The alert queries should return alert-compatible numeric time series (not long-series data with _field labels).  Use Reduce expressions with the Last function for the Actual, Upper Bound, and Lower Bound queries, then create a Math expression that evaluates: Actual > Upper Bound OR Actual < Lower Bound. Configure the alert to notify the Alex Test Email contact point.';
+
+    it('routes Peer Band panel alert create as alert, not panel create', () => {
+        expect(messageMentionsGrafanaAlertCreate(PEER_BAND_PRESSURE_ALERT_PROMPT)).toBe(true);
+        const req = parseGrafanaAlertCreateRequest(PEER_BAND_PRESSURE_ALERT_PROMPT);
+        expect(req?.dashboardUid).toBe('afq7tc6hl1m9sb');
+        expect(req?.panelTitle).toBe('Module 2 Pressure — Alert Test Peer Band ±2σ');
+        expect(req?.contactPoint).toBe('Alex Test Email');
+        expect(messageHasProgrammaticHandler(PEER_BAND_PRESSURE_ALERT_PROMPT)).toBe(true);
+        expect(parseAddOwnHistoryPanelRequest(PEER_BAND_PRESSURE_ALERT_PROMPT)).toBeNull();
+    });
+
+    it('does not misroute either alert prompt to own-history or dashboard review', () => {
+        expect(parseAddOwnHistoryPanelRequest(OWN_HISTORY_ALERT_PROMPT)).toBeNull();
+        expect(parseAddOwnHistoryPanelRequest(MANAGED_RULE_PROMPT)).toBeNull();
+        expect(userWantsDashboardReviewOnly(OWN_HISTORY_ALERT_PROMPT)).toBe(false);
+        expect(userWantsDashboardReviewOnly(MANAGED_RULE_PROMPT)).toBe(false);
+        expect(messageHasProgrammaticHandler(OWN_HISTORY_ALERT_PROMPT)).toBe(true);
+        expect(messageHasProgrammaticHandler(MANAGED_RULE_PROMPT)).toBe(true);
+    });
+
+    const CREATE_CONTACT_POINT_PROMPT =
+        'Create a Grafana-managed alert for the panel titled "Module 1 Current — Alert Test Own History ±2σ" on the dashboard with UID = idHkqdqnk. Configure the alert to trigger when Module 1 Actual is greater than Upper Bound (±2σ) or less than Lower Bound (±2σ). The condition must remain true for longer than 1 minute before the alert fires. Modify the panel queries as needed so they are compatible with Grafana Alerting. The alert queries must return only _time and _value. Do not include _field in the final alert queries. Use Reduce expressions with the Last function for Actual, Upper Bound, and Lower Bound. Then create a Math expression that evaluates: $Actual > $UpperBound || $Actual < $LowerBound. Create a new email contact point named Alex Test Email using this email address: alex.perry@electramet.com. Configure the alert notification policy so this alert sends notifications to the Alex Test Email contact point.';
+
+    const FULL_CUSTOM_METADATA_PROMPT =
+        'Create a Grafana-managed alert named GraftAI Rule for the panel titled "Module 1 Current — Alert Test Own History ±2σ" on the dashboard with UID = idHkqdqnk. Configure the alert to trigger when Module 1 Actual is greater than Upper Bound (±2σ) or less than Lower Bound (±2σ). The condition must remain true for longer than 1 minute before the alert fires. Modify the panel queries as needed so they are compatible with Grafana Alerting. The alert queries must return only _time and _value. Do not include _field in the final alert queries. Use Reduce expressions with the Last function for Actual, Upper Bound, and Lower Bound. Then create a Math expression that evaluates: $Actual > $UpperBound || $Actual < $LowerBound. Create a new email contact point named Alex Test Email using this email address: alex.perry@electramet.com. Configure the alert notification policy so this alert sends notifications to the Alex Test Email contact point. Create an Evaluation Group named GraftAI Alert Groups that evaluates every five minutes. Store the rule in a new folder called GraftAI Alert Tests. Add a label with a key of GraftAI Labels and a value of Alex. Make the summary "Module 1 Current Out of Bounds" and the description "Module 1 Actual Value is Outside the Own History". Add a custom annotation name of "Custom Annotation Name" and content of "Custom Annotation Content".';
+
+    it('parses the create-contact-point alert prompt with email + name', () => {
+        const req = parseGrafanaAlertCreateRequest(CREATE_CONTACT_POINT_PROMPT);
+        expect(req?.dashboardUid).toBe('idHkqdqnk');
+        expect(req?.panelTitle).toBe('Module 1 Current — Alert Test Own History ±2σ');
+        expect(req?.contactPoint).toBe('Alex Test Email');
+        expect(req?.contactPointEmail).toBe('alex.perry@electramet.com');
+        expect(req?.createContactPoint).toBe(true);
+        expect(req?.pendingFor).toBe('1m');
+    });
+
+    it('parses custom rule name, folder, eval group, labels, and annotations', () => {
+        const req = parseGrafanaAlertCreateRequest(FULL_CUSTOM_METADATA_PROMPT);
+        expect(req?.ruleTitle).toBe('GraftAI Rule');
+        expect(req?.folderTitle).toBe('GraftAI Alert Tests');
+        expect(req?.ruleGroup).toBe('GraftAI Alert Groups');
+        expect(req?.every).toBe('5m');
+        expect(req?.pendingFor).toBe('1m');
+        expect(req?.labels).toEqual({ 'GraftAI Labels': 'Alex' });
+        expect(req?.summary).toBe('Module 1 Current Out of Bounds');
+        expect(req?.description).toBe('Module 1 Actual Value is Outside the Own History');
+        expect(req?.customAnnotations).toEqual({
+            'Custom Annotation Name': 'Custom Annotation Content',
+        });
+        expect(req?.contactPoint).toBe('Alex Test Email');
+        expect(req?.contactPointEmail).toBe('alex.perry@electramet.com');
+    });
+
+    it('parses the "make no other labels or custom annotations" restriction', () => {
+        const restricted = `${FULL_CUSTOM_METADATA_PROMPT} Make no other labels or custom annotations.`;
+        const req = parseGrafanaAlertCreateRequest(restricted);
+        expect(req?.restrictMetadata).toBe(true);
+        expect(req?.labels).toEqual({ 'GraftAI Labels': 'Alex' });
+        expect(parseGrafanaAlertCreateRequest(FULL_CUSTOM_METADATA_PROMPT)?.restrictMetadata).toBe(
+            false
+        );
+    });
+
+    const METADATA_UPDATE_PROMPT =
+        'Update the alert rule named GraftAI Rule. Add one label: key GraftAI Labels, value Alex. Add summary "Module 1 Current Out of Bounds" and description "Module 1 Actual Value is Outside the Own History". Add custom annotation name "Custom Annotation Name" with content "Custom Annotation Content". Configure the rule to notify the Alex Test Email contact point.';
+
+    it('parses metadata-only update prompts without requiring dashboard UID', () => {
+        expect(messageMentionsGrafanaAlertUpdate(METADATA_UPDATE_PROMPT)).toBe(true);
+        expect(parseGrafanaAlertCreateRequest(METADATA_UPDATE_PROMPT)).toBeNull();
+        const req = parseGrafanaAlertUpdateRequest(METADATA_UPDATE_PROMPT);
+        expect(req?.ruleTitle).toBe('GraftAI Rule');
+        expect(req?.labels).toEqual({ 'GraftAI Labels': 'Alex' });
+        expect(req?.summary).toBe('Module 1 Current Out of Bounds');
+        expect(req?.description).toBe('Module 1 Actual Value is Outside the Own History');
+        expect(req?.customAnnotations).toEqual({
+            'Custom Annotation Name': 'Custom Annotation Content',
+        });
+        expect(req?.contactPoint).toBe('Alex Test Email');
+        expect(messageHasProgrammaticHandler(METADATA_UPDATE_PROMPT)).toBe(true);
+        expect(parseAddOwnHistoryPanelRequest(METADATA_UPDATE_PROMPT)).toBeNull();
+        expect(userWantsDashboardReviewOnly(METADATA_UPDATE_PROMPT)).toBe(false);
+    });
+
+    const EVAL_GROUP_UPDATE_PROMPT =
+        'Update the alert rule named GraftAI Rule. Create a new evaluation group called "Test Eval Group" that evaluates every minute. Add GraftAI Rule to the Test Eval Group.';
+
+    it('parses evaluation-group move update prompts', () => {
+        expect(messageMentionsGrafanaAlertUpdate(EVAL_GROUP_UPDATE_PROMPT)).toBe(true);
+        const req = parseGrafanaAlertUpdateRequest(EVAL_GROUP_UPDATE_PROMPT);
+        expect(req?.ruleTitle).toBe('GraftAI Rule');
+        expect(req?.ruleGroup).toBe('Test Eval Group');
+        expect(req?.every).toBe('1m');
+        expect(parseGrafanaAlertCreateRequest(EVAL_GROUP_UPDATE_PROMPT)).toBeNull();
+    });
+
+    const EVAL_GROUP_UPDATE_WITH_DASHBOARD_PROMPT =
+        'Update the alert rule named GraftAI Rule on the dashboard with UID = idHkqdqnk for the panel of "Module 1 Current — Alert Test Own History ±2σ". Create a new evaluation group called "Test Eval Group" that evaluates every minute. Add GraftAI Rule to the Test Eval Group.';
+
+    it('keeps update path when dashboard UID + panel of "…" are included as disambiguators', () => {
+        expect(messageMentionsGrafanaAlertUpdate(EVAL_GROUP_UPDATE_WITH_DASHBOARD_PROMPT)).toBe(true);
+        expect(parseGrafanaAlertCreateRequest(EVAL_GROUP_UPDATE_WITH_DASHBOARD_PROMPT)).toBeNull();
+        const req = parseGrafanaAlertUpdateRequest(EVAL_GROUP_UPDATE_WITH_DASHBOARD_PROMPT);
+        expect(req?.ruleTitle).toBe('GraftAI Rule');
+        expect(req?.dashboardUid).toBe('idHkqdqnk');
+        expect(req?.panelTitle).toBe('Module 1 Current — Alert Test Own History ±2σ');
+        expect(req?.ruleGroup).toBe('Test Eval Group');
+        expect(req?.every).toBe('1m');
+        expect(messageHasProgrammaticHandler(EVAL_GROUP_UPDATE_WITH_DASHBOARD_PROMPT)).toBe(true);
+    });
+
+    const BUILD_NEW_RULE_FROM_PANEL_PROMPT =
+        'Update the alert rule named GraftAI Rule on the dashboard with UID = idHkqdqnk for the panel of "Module 1 Current — Alert Test Own History ±2σ". Create a new evaluation group called "Test Eval Group" and assign the new rule to it.';
+
+    it('routes "assign the new rule" + panel + dashboard to create-from-panel (not metadata update)', () => {
+        expect(messageMentionsGrafanaAlertUpdate(BUILD_NEW_RULE_FROM_PANEL_PROMPT)).toBe(false);
+        expect(parseGrafanaAlertUpdateRequest(BUILD_NEW_RULE_FROM_PANEL_PROMPT)).toBeNull();
+        const req = parseGrafanaAlertCreateRequest(BUILD_NEW_RULE_FROM_PANEL_PROMPT);
+        expect(req).not.toBeNull();
+        expect(req?.buildFromPanel).toBe(true);
+        expect(req?.dashboardUid).toBe('idHkqdqnk');
+        expect(req?.panelTitle).toBe('Module 1 Current — Alert Test Own History ±2σ');
+        expect(req?.ruleTitle).toBe('GraftAI Rule');
+        expect(req?.ruleGroup).toBe('Test Eval Group');
+        expect(messageHasProgrammaticHandler(BUILD_NEW_RULE_FROM_PANEL_PROMPT)).toBe(true);
+    });
+
+    const SET_CONTACT_POINT_PROMPT =
+        'Set the contact point as Alex Test Email for the GraftAI Rule on the panel  "Module 1 Current — Alert Test Own History ±2" for the dashboard with the UID = idHkqdqnk';
+
+    it('parses set-contact-point-for-named-rule prompts (no "alert rule named" required)', () => {
+        expect(messageMentionsGrafanaAlertUpdate(SET_CONTACT_POINT_PROMPT)).toBe(true);
+        expect(parseGrafanaAlertCreateRequest(SET_CONTACT_POINT_PROMPT)).toBeNull();
+        const req = parseGrafanaAlertUpdateRequest(SET_CONTACT_POINT_PROMPT);
+        expect(req?.ruleTitle).toBe('GraftAI Rule');
+        expect(req?.contactPoint).toBe('Alex Test Email');
+        expect(req?.createContactPoint).toBe(false);
+        expect(req?.dashboardUid).toBe('idHkqdqnk');
+        expect(req?.panelTitle).toBe('Module 1 Current — Alert Test Own History ±2');
+        expect(messageHasProgrammaticHandler(SET_CONTACT_POINT_PROMPT)).toBe(true);
+    });
+
+    // Production: description-only change by panel title was mis-routed to LLM dashboard save.
+    const CHANGE_DESCRIPTION_BY_PANEL_PROMPT =
+        'Change the alert for the panel titled Module 2 Pressure — Alert Test Peer Band ±2σ on the dashboard with the UID = afq7tc6hl1m9sb to have the description of "Alert on Module 2"';
+
+    it('parses change-description prompts that identify the alert by panel + dashboard (no rule name)', () => {
+        expect(messageMentionsGrafanaAlertUpdate(CHANGE_DESCRIPTION_BY_PANEL_PROMPT)).toBe(true);
+        expect(parseGrafanaAlertCreateRequest(CHANGE_DESCRIPTION_BY_PANEL_PROMPT)).toBeNull();
+        const req = parseGrafanaAlertUpdateRequest(CHANGE_DESCRIPTION_BY_PANEL_PROMPT);
+        expect(req?.ruleTitle).toBeUndefined();
+        expect(req?.dashboardUid).toBe('afq7tc6hl1m9sb');
+        expect(req?.panelTitle).toBe('Module 2 Pressure — Alert Test Peer Band ±2σ');
+        expect(req?.description).toBe('Alert on Module 2');
+        expect(messageHasProgrammaticHandler(CHANGE_DESCRIPTION_BY_PANEL_PROMPT)).toBe(true);
+        expect(isSimpleConversationalMessage(CHANGE_DESCRIPTION_BY_PANEL_PROMPT)).toBe(false);
+    });
+
+    // Production: "alarm titled" + "that says" was stolen by Peer Band panel create (build 204).
+    const ADD_DESCRIPTION_ALARM_TITLED_PROMPT =
+        'Add a description to the alarm titled "Module 2 Pressure — Alert Test Peer Band ±2σ — outside ±2σ" on the dashboard with UID = afq7tc6hl1m9sb that says ". Description for Pressure Panel"';
+
+    it('parses Add-description-to-alarm-titled prompts and does not route to Peer Band create', () => {
+        expect(messageMentionsGrafanaAlertUpdate(ADD_DESCRIPTION_ALARM_TITLED_PROMPT)).toBe(true);
+        expect(parseGrafanaAlertCreateRequest(ADD_DESCRIPTION_ALARM_TITLED_PROMPT)).toBeNull();
+        const req = parseGrafanaAlertUpdateRequest(ADD_DESCRIPTION_ALARM_TITLED_PROMPT);
+        expect(req?.ruleTitle).toBe(
+            'Module 2 Pressure — Alert Test Peer Band ±2σ — outside ±2σ'
+        );
+        expect(req?.dashboardUid).toBe('afq7tc6hl1m9sb');
+        expect(req?.description).toBe('. Description for Pressure Panel');
+        expect(req?.summary).toBeUndefined();
+        expect(messageHasProgrammaticHandler(ADD_DESCRIPTION_ALARM_TITLED_PROMPT)).toBe(true);
+    });
+
+    it('parses Change-the-summary-of-the-alert-for-panel prompts', () => {
+        const prompt =
+            'Change the summary of the alert for the panel titled Module 2 Pressure — Alert Test Peer Band ±2σ on the dashboard with UID = afq7tc6hl1m9sb to "Out of band"';
+        expect(messageMentionsGrafanaAlertUpdate(prompt)).toBe(true);
+        const req = parseGrafanaAlertUpdateRequest(prompt);
+        expect(req?.panelTitle).toBe('Module 2 Pressure — Alert Test Peer Band ±2σ');
+        expect(req?.summary).toBe('Out of band');
+        expect(req?.description).toBeUndefined();
+        expect(messageHasProgrammaticHandler(prompt)).toBe(true);
+    });
+
+    it('parses Add-summary-to-alert-titled without bleeding into description', () => {
+        const prompt =
+            'Add a summary to the alert titled "Module 2 Pressure — Alert Test Peer Band ±2σ — outside ±2σ" on the dashboard with UID = afq7tc6hl1m9sb that says "Pressure alert"';
+        const req = parseGrafanaAlertUpdateRequest(prompt);
+        expect(req?.summary).toBe('Pressure alert');
+        expect(req?.description).toBeUndefined();
+    });
+
+    it('does not treat full create prompts as update-only', () => {
+        expect(messageMentionsGrafanaAlertUpdate(FULL_CUSTOM_METADATA_PROMPT)).toBe(false);
+        expect(parseGrafanaAlertUpdateRequest(FULL_CUSTOM_METADATA_PROMPT)).toBeNull();
+        expect(parseGrafanaAlertCreateRequest(FULL_CUSTOM_METADATA_PROMPT)?.panelTitle).toBeTruthy();
+    });
+
+    it('formats clarification instead of a Grafana UI cookbook', () => {
+        const reply = formatGrafanaAlertGuidanceReply(
+            parseGrafanaAlertCreateRequest(MANAGED_RULE_PROMPT)!,
+            186,
+            'contact point missing'
+        );
+        expect(reply).toContain('Need clarification — Grafana alert (Graft build 186)');
+        expect(reply).toContain('Automatic create failed');
+        expect(reply).toContain('Alex Test Email');
+        expect(reply).toContain('Module 2 Current — Alert Test Own History ±2σ');
+        expect(reply).toContain('afq7tc6hl1m9sb');
+        expect(reply).toContain('Reduce');
+        expect(reply).toContain('1m');
+        expect(reply).not.toContain('typical Own History layout');
+        expect(reply).not.toContain('$E > $F || $E < $G');
+    });
+
+    const EVAL_GROUP_INTERVAL_PROMPT =
+        "Change the Evaluation Interval of 'Test Eval Group' to be 2 minutes.";
+
+    it('parses evaluation-group interval change prompts and keeps them off the LLM simple path', () => {
+        expect(messageMentionsGrafanaEvalGroupIntervalChange(EVAL_GROUP_INTERVAL_PROMPT)).toBe(true);
+        expect(parseGrafanaEvalGroupIntervalRequest(EVAL_GROUP_INTERVAL_PROMPT)).toEqual({
+            ruleGroup: 'Test Eval Group',
+            every: '2m',
+        });
+        expect(parseGrafanaAlertCreateRequest(EVAL_GROUP_INTERVAL_PROMPT)).toBeNull();
+        expect(parseGrafanaAlertUpdateRequest(EVAL_GROUP_INTERVAL_PROMPT)).toBeNull();
+        expect(messageHasProgrammaticHandler(EVAL_GROUP_INTERVAL_PROMPT)).toBe(true);
+        expect(isSimpleConversationalMessage(EVAL_GROUP_INTERVAL_PROMPT)).toBe(false);
+        expect(parseAddOwnHistoryPanelRequest(EVAL_GROUP_INTERVAL_PROMPT)).toBeNull();
+        expect(userWantsDashboardReviewOnly(EVAL_GROUP_INTERVAL_PROMPT)).toBe(false);
+    });
+});
