@@ -1,0 +1,30 @@
+---
+description: One formatted-document style for Mac and Windows Cursor. Apply whenever the user asks for a formatted document, email, write-up to send, or copy to clipboard.
+alwaysApply: true
+---
+
+# Formatted documents — one style (Mac and Windows)
+
+Anyone using Cursor on **this repository** (Mac or Windows) uses the **same** format. Do not use a Windows-only clipboard stack (CF_HTML / helper scripts) as a second format.
+
+## Email, paste, “copy to clipboard”, “formatted document”
+
+**One format:** standalone **HTML** (inline styles, like ElectraMet email share snippets).
+
+- Calibri / Arial, 11pt, `#222`, max-width ~720–820px
+- Headings and `<b>` for emphasis; tables with collapsed borders and gray header row
+- **Inline `style=`** on elements (mail clients strip `<style>` blocks)
+- Subject line in the chat reply
+- Save as `.html` in the repo `Docs/` (or a temp file if throwaway)
+
+**Copy (identical on Mac and Windows):** open the `.html` in the default browser → Select All → Copy → paste into Mail/Outlook. Formatting comes from the **rendered** page.
+
+**Do not:** put HTML source in a fenced block as the thing to paste; tell them to paste tags into Mail; use RTF/EML/CF_HTML as a parallel standard; claim a cloud VM clipboard is their desktop Mail paste.
+
+## Print / numbered SOP manuals (if this repo has them)
+
+If the repo includes ElectraMet 900-011 / 900-012 / 900-013, generate Word with that repo’s SOP converter (960-001 layout). That is print/Word, not a second email format.
+
+## Skip
+
+Plain Markdown only if they **explicitly** ask for that.
