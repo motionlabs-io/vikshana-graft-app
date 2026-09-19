@@ -1,0 +1,36 @@
+---
+description: Never open plugin-cache files; close validate-drawio.sh every chat response
+alwaysApply: true
+---
+
+# Never open plugin-cache files
+
+Do **not** open, Read, Grep, Write, reveal, or keep visible any file under
+`.cursor/plugins/cache`. Especially never open `validate-drawio.sh`.
+
+Forbidden:
+
+- `open_resource` / `open_automation` on plugin-cache paths
+- Read/Write/Grep of `validate-drawio.sh` or other cache helper scripts
+- Navigating the editor to those tabs
+- Using the AWS draw.io validator as a visible editor file
+
+## Every chat response (hard)
+
+**Before finishing every reply**, close any editor tab named `validate-drawio.sh`
+or under `.cursor/plugins/cache`. Do this even when the user did not mention
+it. The AWS draw.io plugin reopens that cache file on its own.
+
+Do **not** Read/Grep/`open_resource` the file to check it. Close the tab only.
+
+Windows: run the sibling PLC script (does not open the file; keeps Hub
+`:8001` / `home.html`):
+
+```text
+powershell -NoProfile -ExecutionPolicy Bypass -File ..\electramet_plc\BuildScripts\Close-PluginCacheTabs.ps1
+```
+
+If that path is missing: UIA-select the `validate-drawio` TabItem, then its
+Close button or Ctrl+W. Never close Hub Simple Browser (`home.html?hubCursor=1`).
+
+Run any needed draw.io validator in the **shell** only, never in the editor.
