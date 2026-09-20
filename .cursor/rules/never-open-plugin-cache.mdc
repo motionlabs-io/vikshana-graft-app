@@ -1,5 +1,5 @@
 ---
-description: Never open plugin-cache files; close validate-drawio.sh at the end of a chat topic
+description: Never open plugin-cache files; close validate-drawio.sh regularly at work checkpoints
 alwaysApply: true
 ---
 
@@ -15,12 +15,15 @@ Forbidden:
 - Navigating the editor to those tabs
 - Using the AWS draw.io validator as a visible editor file
 
-## End of a chat topic (hard)
+## Close it regularly (hard)
 
-Close `validate-drawio.sh` / `.cursor/plugins/cache` tabs **once, when the
-current chat topic is finished** — wrap-up, finalize, or the user starts a
-new subject. Do **not** close them after every reply. The AWS draw.io plugin
-reopens the cache file on its own; closing mid-topic just reloads it.
+The AWS draw.io plugin reopens the cache file on its own, so closing only at
+wrap-up leaves `validate-drawio.sh` visible for most of a session. Close
+`validate-drawio.sh` / `.cursor/plugins/cache` tabs **on a regular cadence**:
+at each natural checkpoint — after a test run, build, deploy, or commit, at
+wrap-up, and any time the tab is noticed open. A reload costs nothing; a tab
+left open for an hour is the actual problem. Closing every single reply is
+still unnecessary.
 
 Do **not** Read/Grep/`open_resource` the file to check it. Close the tab only.
 
